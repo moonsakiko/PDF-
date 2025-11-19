@@ -1,41 +1,37 @@
-name: Build APK with Cache
+name: Build PDF Splitter APK
 on:
-  workflow_dispatch: # 允许手动点击运行
+  workflow_dispatch: # 手动触发
 
 jobs:
   build:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout code (拉取代码)
+    - name: Checkout code
       uses: actions/checkout@v3
 
-    # 1. 配置 Python
     - name: Setup Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.11'
-        cache: 'pip' # 开启 pip 缓存！
+        cache: 'pip'
 
-    # 2. 安装 Flet (利用缓存，第二次会很快)
     - name: Install dependencies
-      run: pip install flet
+      run: pip install -r requirements.txt
 
-    # 3. 配置 Flutter (这是大头，我们用带缓存的 Action)
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
         flutter-version: '3.19.0'
-        cache: true # 开启 Flutter 缓存！关键！
+        cache: true
 
-    # 4. 开始打包
     - name: Build APK
+      # 这里修改了 APP 的名称和描述
       run: |
-        flet build apk --product "名称" --org "com.yourname.pdf" --description "描述" --verbose
+        flet build apk --product "PDF拆分器" --org "com.mypdf.tools" --description "按目录拆分PDF" --verbose
 
-    # 5. 上传打包好的文件
     - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
-        name: my-python-app
+        name: pdf-splitter-app
         path: build/apk/app-release.apk
