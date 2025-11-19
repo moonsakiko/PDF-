@@ -1,2 +1,2 @@
 flet
-pypdf
+pypdf>=3.0.0
