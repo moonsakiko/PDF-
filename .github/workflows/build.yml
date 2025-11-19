@@ -1,0 +1,44 @@
+name: Build APK with Cache
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: # 允许手动点击运行
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code (拉取代码)
+      uses: actions/checkout@v3
+
+    # 1. 配置 Python
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        cache: 'pip' # 开启 pip 缓存！
+
+    # 2. 安装 Flet (利用缓存，第二次会很快)
+    - name: Install dependencies
+      run: pip install flet
+
+    # 3. 配置 Flutter (这是大头，我们用带缓存的 Action)
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.19.0'
+        cache: true # 开启 Flutter 缓存！关键！
+
+    # 4. 开始打包
+    - name: Build APK
+      run: |
+        flet build apk --verbose
+
+    # 5. 上传打包好的文件
+    - name: Upload APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: my-python-app
+        path: build/apk/app-release.apk
