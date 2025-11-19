@@ -2,34 +2,39 @@ import flet as ft
 import os
 import shutil
 import zipfile
-from PyPDF2 import PdfReader, PdfWriter
 import tempfile
+import traceback # 用于捕获详细错误
+
+# ⚠️ 关键修改：不在开头 import PyPDF2，防止启动崩溃
+# from PyPDF2 import PdfReader, PdfWriter (删掉这一行)
 
 def main(page: ft.Page):
-    # --- 页面配置 ---
     page.title = "PDF拆分神器"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.scroll = ft.ScrollMode.AUTO
     page.padding = 20
-    
-    # 这里的 print 会输出到安桌的后台日志，方便调试（虽然你看不到，但能防止报错卡死）
-    print("App Starting...") 
+
+    print("App UI Starting...") # 这行虽然你看不到，但在后台是有用的
 
     # --- 状态变量 ---
     process_log = ft.Column()
-    selected_file_path_ref = ft.Ref[str]() # 专门用来存文件路径
+    selected_file_path_ref = ft.Ref[str]()
 
     def add_log(message, color="black"):
         process_log.controls.append(ft.Text(message, color=color, size=12))
-        try:
-            page.update()
-        except:
-            pass # 防止更新UI时出错导致崩溃
+        page.update()
 
     def start_process(e):
-        print("Start Process Clicked")
         if not selected_file_path_ref.current:
             add_log("❌ 请先选择一个PDF文件！", "red")
+            return
+
+        # ⚠️ 关键修改：在这里引用库！这叫“懒加载”
+        # 这样如果库有问题，只会报错，不会导致App打不开
+        try:
+            from PyPDF2 import PdfReader, PdfWriter
+        except ImportError:
+            add_log("❌ 致命错误：找不到 PyPDF2 库！请检查打包配置 requirements.txt", "red")
             return
 
         split_level = int(level_dropdown.value)
@@ -42,14 +47,13 @@ def main(page: ft.Page):
         try:
             add_log(f"🚀 开始处理: {os.path.basename(pdf_path)}", "blue")
             
-            # 使用临时文件夹，这是安卓上最安全的做法
+            # 创建临时文件夹
             temp_dir = tempfile.mkdtemp()
-            print(f"Temp dir: {temp_dir}")
             
             try:
                 reader = PdfReader(pdf_path)
                 
-                # 递归获取书签
+                # 递归找书签
                 def get_bookmarks(bookmarks, level, current=1):
                     res = []
                     for item in bookmarks:
@@ -59,7 +63,11 @@ def main(page: ft.Page):
                             res.append(item)
                     return res
 
-                bookmarks = get_bookmarks(reader.outline, split_level)
+                try:
+                    bookmarks = get_bookmarks(reader.outline, split_level)
+                except Exception:
+                    # 有些PDF可能没有outline属性
+                    bookmarks = []
                 
                 if not bookmarks:
                     add_log(f"⚠️ 未找到第 {split_level} 级目录，无法拆分。", "orange")
@@ -67,7 +75,7 @@ def main(page: ft.Page):
 
                 add_log(f"✨ 找到 {len(bookmarks)} 个章节...", "green")
                 
-                # 拆分逻辑
+                # 拆分核心
                 total_pages = len(reader.pages)
                 for i, bookmark in enumerate(bookmarks):
                     title = bookmark.title
@@ -91,7 +99,7 @@ def main(page: ft.Page):
                         writer.write(f)
                 
                 # 打包 ZIP
-                zip_name = f"拆分结果_{os.path.basename(pdf_path)}.zip"
+                zip_name = f"Result_{int(os.path.getsize(pdf_path))}.zip" # 使用大小做随机名防止重名
                 zip_full_path = os.path.join(tempfile.gettempdir(), zip_name)
                 
                 with zipfile.ZipFile(zip_full_path, 'w') as z:
@@ -101,27 +109,27 @@ def main(page: ft.Page):
                             
                 add_log("🎉 打包完成！请点击下方按钮保存。", "green")
                 
-                # 绑定保存路径
+                # 准备保存
                 btn_save.data = zip_full_path
-                save_file_picker.result_name = zip_name
+                save_file_picker.result_name = f"拆分结果_{os.path.basename(pdf_path)}.zip"
                 btn_save.visible = True
                 
             except Exception as e:
-                add_log(f"❌ 处理出错: {e}", "red")
-                print(f"Error details: {e}")
+                # 打印详细错误堆栈
+                error_msg = traceback.format_exc()
+                add_log(f"❌ 处理逻辑出错:\n{error_msg}", "red")
             
         except Exception as outer_e:
-            add_log(f"❌ 严重错误: {outer_e}", "red")
+            add_log(f"❌ 系统错误: {str(outer_e)}", "red")
             
         finally:
             progress_ring.visible = False
             btn_start.disabled = False
             page.update()
 
-    # --- 文件选择逻辑 ---
+    # --- 文件选择器 ---
     def pick_result(e: ft.FilePickerResultEvent):
         if e.files:
-            # 注意：安卓上在这个回调里必须立刻保存路径
             file_obj = e.files[0]
             selected_file_path_ref.current = file_obj.path
             file_label.value = file_obj.name
@@ -129,7 +137,7 @@ def main(page: ft.Page):
             page.update()
 
     def save_result(e: ft.FilePickerResultEvent):
-        # Flet 提供了 save_file_picker，它会自动处理安卓的存储权限
+        # 用户选好位置后保存
         if e.path and btn_save.data:
             try:
                 shutil.copy(btn_save.data, e.path)
@@ -140,19 +148,23 @@ def main(page: ft.Page):
             except Exception as err:
                 add_log(f"保存失败: {err}", "red")
 
-    # --- 界面组件 ---
+    # --- UI 组件 ---
     pick_dialog = ft.FilePicker(on_result=pick_result)
     save_file_picker = ft.FilePicker(on_result=save_result)
     page.overlay.extend([pick_dialog, save_file_picker])
 
-    file_label = ft.Text("未选择文件", color="grey")
+    file_label = ft.Text("请选择文件...", color="grey")
     
     level_dropdown = ft.Dropdown(
         label="拆分层级", width=200, value="2",
-        options=[ft.dropdown.Option("1", "第1级 (章)"), ft.dropdown.Option("2", "第2级 (节)")]
+        options=[
+            ft.dropdown.Option("1", "第1级 (章)"), 
+            ft.dropdown.Option("2", "第2级 (节)"),
+            ft.dropdown.Option("3", "第3级 (小节)")
+        ]
     )
 
-    btn_start = ft.ElevatedButton("开始拆分", on_click=start_process, bgcolor="blue", color="white")
+    btn_start = ft.ElevatedButton("开始拆分", icon=ft.icons.PLAY_ARROW, on_click=start_process, bgcolor="blue", color="white")
     progress_ring = ft.ProgressRing(visible=False)
     
     btn_save = ft.ElevatedButton(
@@ -165,21 +177,29 @@ def main(page: ft.Page):
 
     # 布局
     page.add(
-        ft.Text("📚 PDF 拆分神器", size=24, weight="bold"),
-        ft.Container(height=20),
-        ft.Row([ft.ElevatedButton("选择PDF", on_click=lambda _: pick_dialog.pick_files(allowed_extensions=["pdf"])), file_label]),
-        ft.Container(height=10),
-        level_dropdown,
-        ft.Container(height=20),
-        ft.Row([btn_start, progress_ring]),
-        ft.Container(height=20),
-        ft.Container(
-            content=process_log, 
-            height=200, bgcolor="#f0f0f0", border_radius=10, padding=10, 
-            border=ft.border.all(1, "#cccccc")
-        ),
-        ft.Container(height=10),
-        btn_save
+        ft.Column([
+            ft.Text("📄 PDF 智能拆分", size=24, weight="bold"),
+            ft.Container(height=10),
+            ft.Container(
+                content=ft.Row([
+                    ft.ElevatedButton("选择PDF", icon=ft.icons.UPLOAD_FILE, on_click=lambda _: pick_dialog.pick_files(allowed_extensions=["pdf"])), 
+                    ft.Container(content=file_label, width=150) # 限制宽度防止溢出
+                ]),
+                bgcolor="#f0f0f0", padding=10, border_radius=10
+            ),
+            ft.Container(height=10),
+            level_dropdown,
+            ft.Container(height=20),
+            ft.Row([btn_start, progress_ring]),
+            ft.Container(height=10),
+            ft.Text("运行日志:", size=12, color="grey"),
+            ft.Container(
+                content=ft.Column([process_log], scroll=ft.ScrollMode.ALWAYS), 
+                height=200, bgcolor="#FAFAFA", border=ft.border.all(1, "#eeeeee"), border_radius=5, padding=5
+            ),
+            ft.Container(height=10),
+            btn_save
+        ], scroll=ft.ScrollMode.AUTO)
     )
 
 ft.app(target=main)
