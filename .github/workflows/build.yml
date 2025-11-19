@@ -31,7 +31,7 @@ jobs:
     # 4. 开始打包
     - name: Build APK
       run: |
-        flet build apk --product "名称" --org "com.yourname" --description "描述" --verbose
+        flet build apk --product "名称" --org "com.yourname.pdf" --description "描述" --verbose
 
     # 5. 上传打包好的文件
     - name: Upload APK
