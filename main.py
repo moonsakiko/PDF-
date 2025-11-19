@@ -1,12 +1,23 @@
 import flet as ft
-from pypdf import PdfReader, PdfWriter
-import zipfile
-import io
 import os
+import io
+import zipfile
 
-# --- 核心逻辑部分 (复用并改造你的原始脚本) ---
+# --- 防崩关键：把第三方库的引用放在函数内部，或用 try 包裹 ---
+# 这样即使库没装好，APP也能打开，并提示错误
+try:
+    from pypdf import PdfReader, PdfWriter
+    IMPORT_ERROR = None
+except ImportError as e:
+    IMPORT_ERROR = f"严重错误：无法加载 pypdf 库。\n原因：{str(e)}\n请检查 build.yml 中的 --include-packages 设置。"
+except Exception as e:
+    IMPORT_ERROR = f"未知启动错误：{str(e)}"
+
+# --- 辅助函数 ---
+def safe_filename(title):
+    return "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()
+
 def get_bookmarks_by_level(bookmarks, level=1, current_level=1):
-    """递归提取指定层级的书签"""
     result = []
     for item in bookmarks:
         if isinstance(item, list):
@@ -15,222 +26,159 @@ def get_bookmarks_by_level(bookmarks, level=1, current_level=1):
             result.append(item)
     return result
 
-def safe_filename(title):
-    """清理非法字符"""
-    return "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()
-
 def main(page: ft.Page):
-    page.title = "PDF 智能拆分器"
+    page.title = "PDF 拆分工具"
     page.scroll = "adaptive"
-    page.theme_mode = ft.ThemeMode.LIGHT
-
-    # --- 状态变量 ---
-    selected_files = {}  # 存储文件名和路径/对象
-    process_log = ft.Column()
     
-    # 内存中暂存 ZIP 数据
+    # --- 1. 如果启动时报错，直接显示错误界面，不白屏 ---
+    if IMPORT_ERROR:
+        page.bgcolor = ft.colors.RED_100
+        page.add(
+            ft.Column([
+                ft.Icon(ft.icons.ERROR_OUTLINE, size=60, color=ft.colors.RED),
+                ft.Text("程序启动失败", size=24, weight=ft.FontWeight.BOLD, color=ft.colors.RED),
+                ft.Text(IMPORT_ERROR, size=16, selectable=True),
+                ft.Text("解决方法：请确保 GitHub Action 的 build 命令中包含 --include-packages pypdf", color=ft.colors.GREY_700)
+            ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+        )
+        page.update()
+        return
+    # ---------------------------------------------------
+
+    # 正常界面逻辑
+    selected_files = {}
     zip_buffer = io.BytesIO()
 
-    # --- UI 组件 ---
-    
-    # 1. 日志显示区
-    log_text = ft.Text("等待操作...", size=14, color=ft.colors.GREY)
+    log_view = ft.Column()
     
     def add_log(msg, color=ft.colors.BLACK):
-        process_log.controls.append(ft.Text(msg, color=color, selectable=True))
+        log_view.controls.append(ft.Text(msg, color=color))
         page.update()
 
-    # 2. 文件选择器 (读取)
     def on_file_picked(e: ft.FilePickerResultEvent):
         if e.files:
             selected_files.clear()
-            file_names = []
+            names = []
             for f in e.files:
                 selected_files[f.name] = f.path
-                file_names.append(f.name)
-            file_info_text.value = f"已选择: {', '.join(file_names)}"
-            btn_start.disabled = False
+                names.append(f.name)
+            file_status.value = f"已选: {len(names)} 个文件"
+            btn_run.disabled = False
             page.update()
 
     file_picker = ft.FilePicker(on_result=on_file_picked)
     page.overlay.append(file_picker)
 
-    # 3. 文件保存器 (保存 ZIP)
-    def on_save_result(e: ft.FilePickerResultEvent):
-        # 这里的逻辑稍有不同，Flet web/mobile 保存二进制流比较特殊
-        # 但在本地打包 APK 环境下，save_file 会返回路径，我们需要自己写入
-        pass
-
-    # 注意：Flet 的 save_file 在移动端行为主要是让用户选路径
-    # 简化起见，我们处理逻辑放在主流程，保存通过 file_picker.save_file 触发 UI
-    # 但为了兼容性最好，我们通过 Event 处理保存逻辑稍微复杂，
-    # 这里我们用最简单的逻辑：处理完 -> 启用保存按钮 -> 点击弹出保存对话框 -> 写入文件
-    
     save_picker = ft.FilePicker(
-        on_result=lambda e: save_zip_to_disk(e.path) if e.path else None
+        on_result=lambda e: save_zip(e.path) if e.path else None
     )
     page.overlay.append(save_picker)
 
-    def save_zip_to_disk(path):
+    def save_zip(path):
         try:
             with open(path, "wb") as f:
                 f.write(zip_buffer.getvalue())
-            add_log(f"✅ 文件已成功保存到: {path}", ft.colors.GREEN)
-            ft.AlertDialog(title=ft.Text("保存成功！"), on_dismiss=lambda e: None).open = True
+            add_log(f"✅ 保存成功: {path}", ft.colors.GREEN)
         except Exception as e:
-            add_log(f"❌ 保存失败: {str(e)}", ft.colors.RED)
+            add_log(f"❌ 保存失败: {e}", ft.colors.RED)
 
-    # --- 核心业务逻辑 ---
-    def start_processing(e):
-        if not selected_files:
-            return
-        
-        process_log.controls.clear()
-        add_log("🚀 开始处理...", ft.colors.BLUE)
-        btn_start.disabled = True
-        btn_save.disabled = True
-        progress_ring.visible = True
+    def start_split(e):
+        btn_run.disabled = True
         page.update()
-
-        target_level = int(dd_level.value)
+        log_view.controls.clear()
+        add_log("⏳ 开始处理...", ft.colors.BLUE)
         
-        # 重置 ZIP 缓存
+        target_level = int(dd_level.value)
         zip_buffer.seek(0)
         zip_buffer.truncate(0)
-
-        success_count = 0
+        
+        success_cnt = 0
 
         try:
-            # 创建 ZIP 文件对象
-            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_out:
-                
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                 for fname, fpath in selected_files.items():
-                    add_log(f"\n正在读取: {fname}")
+                    add_log(f"正在读取: {fname}")
                     try:
                         reader = PdfReader(fpath)
-                        bookmarks = get_bookmarks_by_level(reader.outline, level=target_level)
+                        outlines = reader.outline
+                        bookmarks = get_bookmarks_by_level(outlines, level=target_level)
                         
                         if not bookmarks:
-                            add_log(f"⚠️ 跳过: 未找到第 {target_level} 级目录", ft.colors.ORANGE)
+                            add_log(f"⚠️ 跳过: 无第 {target_level} 级目录", ft.colors.ORANGE)
                             continue
-
-                        base_name = os.path.splitext(fname)[0]
+                            
+                        base = os.path.splitext(fname)[0]
                         total_pages = len(reader.pages)
+                        
+                        for i, bm in enumerate(bookmarks):
+                            try:
+                                # 处理有些书签没有 title 的情况
+                                title = bm.title if bm.title else f"Untitled_{i}"
+                                start = reader.get_destination_page_number(bm)
+                                
+                                if i < len(bookmarks) - 1:
+                                    end = reader.get_destination_page_number(bookmarks[i+1]) - 1
+                                else:
+                                    end = total_pages - 1
+                                
+                                if end < start: end = start # 防止页码倒挂
 
-                        for i, bookmark in enumerate(bookmarks):
-                            title = bookmark.title
-                            start_page = reader.get_destination_page_number(bookmark)
-                            
-                            # 计算结束页
-                            if i < len(bookmarks) - 1:
-                                next_bookmark = bookmarks[i+1]
-                                end_page = reader.get_destination_page_number(next_bookmark) - 1
-                            else:
-                                end_page = total_pages - 1
+                                writer = PdfWriter()
+                                for p in range(start, end + 1):
+                                    writer.add_page(reader.pages[p])
+                                
+                                pdf_bytes = io.BytesIO()
+                                writer.write(pdf_bytes)
+                                
+                                clean_title = safe_filename(title)
+                                z_name = f"{base}/{i+1:02d}-{clean_title}.pdf"
+                                zf.writestr(z_name, pdf_bytes.getvalue())
+                                
+                            except Exception as inner_e:
+                                print(f"书签处理错误: {inner_e}") # 忽略单个书签错误
 
-                            # 清理文件名
-                            safe_title = safe_filename(title)
-                            pdf_out_name = f"{base_name}/{i+1:02d}-{safe_title}.pdf"
+                        add_log(f"✅ 拆分完成", ft.colors.GREEN)
+                        success_cnt += 1
+                        
+                    except Exception as f_err:
+                        add_log(f"❌ 文件错误: {f_err}", ft.colors.RED)
 
-                            # 拆分逻辑
-                            writer = PdfWriter()
-                            for p in range(start_page, end_page + 1):
-                                writer.add_page(reader.pages[p])
-
-                            # 写入内存流
-                            pdf_bytes = io.BytesIO()
-                            writer.write(pdf_bytes)
-                            
-                            # 写入 ZIP
-                            zip_out.writestr(pdf_out_name, pdf_bytes.getvalue())
-                            add_log(f"  ├─ 拆分: {safe_title} (P{start_page+1}-P{end_page+1})")
-
-                        success_count += 1
-
-                    except Exception as ex:
-                        add_log(f"❌ 处理文件出错: {str(ex)}", ft.colors.RED)
-
-            if success_count > 0:
-                add_log(f"\n🎉 处理完成！生成了结果压缩包。", ft.colors.GREEN)
+            if success_cnt > 0:
                 btn_save.disabled = False
+                add_log("🎉全部完成，请点击下方保存按钮", ft.colors.BLUE)
             else:
-                add_log("\n⚠️ 没有文件被成功拆分。", ft.colors.ORANGE)
+                add_log("没有文件生成", ft.colors.GREY)
 
-        except Exception as e:
-            add_log(f"❌ 全局错误: {str(e)}", ft.colors.RED)
+        except Exception as z_err:
+            add_log(f"❌ ZIP 打包错误: {z_err}", ft.colors.RED)
         
-        btn_start.disabled = False
-        progress_ring.visible = False
+        btn_run.disabled = False
         page.update()
 
-
-    # --- 界面布局 ---
+    # UI 组件
+    btn_pick = ft.ElevatedButton("1. 选择文件", icon=ft.icons.UPLOAD, on_click=lambda _: file_picker.pick_files(allow_multiple=True))
+    file_status = ft.Text("未选择")
     
-    file_info_text = ft.Text("未选择文件")
-    
-    btn_pick = ft.ElevatedButton(
-        "1. 选择 PDF 文件 (支持多选)", 
-        icon=ft.icons.UPLOAD_FILE,
-        on_click=lambda _: file_picker.pick_files(allow_multiple=True, allowed_extensions=["pdf"])
-    )
-
     dd_level = ft.Dropdown(
-        label="拆分依据 (目录层级)",
-        value="2",
-        options=[
-            ft.dropdown.Option("1", "按第 1 级 (章)"),
-            ft.dropdown.Option("2", "按第 2 级 (节)"),
-            ft.dropdown.Option("3", "按第 3 级 (小节)"),
-        ],
-        width=200
+        value="2", 
+        label="拆分层级", 
+        width=150,
+        options=[ft.dropdown.Option("1"), ft.dropdown.Option("2"), ft.dropdown.Option("3")]
     )
+    
+    btn_run = ft.ElevatedButton("2. 开始拆分", icon=ft.icons.CUT, on_click=start_split, disabled=True)
+    btn_save = ft.ElevatedButton("3. 保存结果", icon=ft.icons.SAVE, on_click=lambda _: save_picker.save_file(file_name="result.zip"), disabled=True, bgcolor=ft.colors.GREEN, color=ft.colors.WHITE)
 
-    btn_start = ft.ElevatedButton(
-        "2. 开始拆分", 
-        icon=ft.icons.CUT,
-        disabled=True,
-        on_click=start_processing,
-        style=ft.ButtonStyle(color=ft.colors.WHITE, bgcolor=ft.colors.BLUE)
-    )
-
-    progress_ring = ft.ProgressRing(visible=False)
-
-    btn_save = ft.ElevatedButton(
-        "3. 保存结果 (ZIP压缩包)",
-        icon=ft.icons.SAVE_ALT,
-        disabled=True,
-        on_click=lambda _: save_picker.save_file(file_name="split_result.zip"),
-        style=ft.ButtonStyle(color=ft.colors.WHITE, bgcolor=ft.colors.GREEN)
-    )
-
-    # 组装页面
     page.add(
-        ft.Container(
-            content=ft.Column([
-                ft.Text("PDF 按目录批量拆分", size=24, weight=ft.FontWeight.BOLD),
-                ft.Divider(),
-                btn_pick,
-                file_info_text,
-                ft.Divider(),
-                dd_level,
-                ft.Row([btn_start, progress_ring]),
-                ft.Divider(),
-                ft.Container(
-                    content=ft.Column([
-                        ft.Text("运行日志:", weight=ft.FontWeight.BOLD),
-                        process_log
-                    ], scroll="always"),
-                    height=300,
-                    bgcolor=ft.colors.GREY_100,
-                    border_radius=10,
-                    padding=10
-                ),
-                ft.Divider(),
-                btn_save,
-                ft.Text("提示：结果将打包为 ZIP 下载，解压即可看到文件夹结构。", size=12, color=ft.colors.GREY)
-            ]),
-            padding=20
-        )
+        ft.Text("PDF 目录拆分器 (修复版)", size=20, weight=ft.FontWeight.BOLD),
+        ft.Divider(),
+        btn_pick,
+        file_status,
+        ft.Row([ft.Text("目录级别:"), dd_level]),
+        btn_run,
+        ft.Divider(),
+        ft.Container(content=log_view, height=200, bgcolor=ft.colors.GREY_100, padding=10, border_radius=5, overflow=ft.ScrollMode.AUTO),
+        btn_save
     )
 
 ft.app(target=main)
