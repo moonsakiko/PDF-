@@ -34,7 +34,7 @@ jobs:
     # 4. 开始打包
     - name: Build APK
       run: |
-        flet build apk --product "PDF拆分神器" --org "com.yourname.pdf" --project-name "pdftool" --description "由Python驱动的PDF工具" --verbose
+        flet build apk --product "PDF拆分神器" --org "com.yourname.pdf" --description "由Python驱动的PDF工具" --verbose
 
     # 5. 上传打包好的文件
     - name: Upload APK
