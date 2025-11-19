@@ -29,7 +29,7 @@ jobs:
     # --- 修正了下面这一步 ---
     - name: Build APK
       run: |
-        flet build apk --product "PDF拆分器" --org "com.mypdf.tools" --description "拆分工具"
+        flet build apk --product "PDF工具" --org "com.mypdf.tools" --description "拆分PDF" --verbose
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
