@@ -28,7 +28,7 @@ jobs:
     - name: Build APK
       # 这里修改了 APP 的名称和描述
       run: |
-        flet build apk --product "PDF拆分器" --org "com.mypdf.tools" --description "按目录拆分PDF" --verbose
+        flet build apk --product "PDF拆分器" --org "com.mypdf.tools" --description "拆分工具" --include-packages pypdf --verbose  
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
