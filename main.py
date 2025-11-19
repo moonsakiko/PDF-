@@ -6,236 +6,180 @@ from PyPDF2 import PdfReader, PdfWriter
 import tempfile
 
 def main(page: ft.Page):
-    # --- 页面设置 ---
-    page.title = "超级PDF拆分器"
+    # --- 页面配置 ---
+    page.title = "PDF拆分神器"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.scroll = ft.ScrollMode.AUTO
     page.padding = 20
     
-    # 定义一些颜色
-    BG_COLOR = "#f0f4f8"
-    PRIMARY_COLOR = "#3f51b5"
+    # 这里的 print 会输出到安桌的后台日志，方便调试（虽然你看不到，但能防止报错卡死）
+    print("App Starting...") 
 
     # --- 状态变量 ---
-    selected_file_path = ft.Ref[str]()
     process_log = ft.Column()
-    
-    # --- 核心逻辑函数 (从之前的脚本改造) ---
-    def get_bookmarks_by_level(bookmarks, level=1, current_level=1):
-        result = []
-        for item in bookmarks:
-            if isinstance(item, list):
-                result.extend(get_bookmarks_by_level(item, level, current_level + 1))
-            elif current_level == level:
-                result.append(item)
-        return result
+    selected_file_path_ref = ft.Ref[str]() # 专门用来存文件路径
 
     def add_log(message, color="black"):
         process_log.controls.append(ft.Text(message, color=color, size=12))
-        page.update()
+        try:
+            page.update()
+        except:
+            pass # 防止更新UI时出错导致崩溃
 
     def start_process(e):
-        if not selected_file_label.value:
+        print("Start Process Clicked")
+        if not selected_file_path_ref.current:
             add_log("❌ 请先选择一个PDF文件！", "red")
             return
 
-        # 获取用户选择的层级 (1, 2, 3)
         split_level = int(level_dropdown.value)
-        pdf_path = selected_file_label.data # 真实路径
+        pdf_path = selected_file_path_ref.current
         
-        # 显示进度条
         progress_ring.visible = True
         btn_start.disabled = True
-        add_log(f"🚀 开始处理，拆分层级：第 {split_level} 级...", PRIMARY_COLOR)
         page.update()
 
         try:
-            # 1. 创建临时目录来存放拆分后的文件
-            with tempfile.TemporaryDirectory() as temp_dir:
+            add_log(f"🚀 开始处理: {os.path.basename(pdf_path)}", "blue")
+            
+            # 使用临时文件夹，这是安卓上最安全的做法
+            temp_dir = tempfile.mkdtemp()
+            print(f"Temp dir: {temp_dir}")
+            
+            try:
                 reader = PdfReader(pdf_path)
-                total_pages = len(reader.pages)
                 
-                # 提取书签
-                try:
-                    bookmarks = get_bookmarks_by_level(reader.outline, level=split_level)
-                except Exception:
-                    add_log("❌ 读取目录失败，该文件可能没有目录或已加密。", "red")
-                    bookmarks = []
+                # 递归获取书签
+                def get_bookmarks(bookmarks, level, current=1):
+                    res = []
+                    for item in bookmarks:
+                        if isinstance(item, list):
+                            res.extend(get_bookmarks(item, level, current + 1))
+                        elif current == level:
+                            res.append(item)
+                    return res
 
+                bookmarks = get_bookmarks(reader.outline, split_level)
+                
                 if not bookmarks:
-                    add_log(f"⚠️ 未找到第 {split_level} 级目录。", "orange")
-                    progress_ring.visible = False
-                    btn_start.disabled = False
-                    page.update()
+                    add_log(f"⚠️ 未找到第 {split_level} 级目录，无法拆分。", "orange")
                     return
 
-                add_log(f"✨ 找到 {len(bookmarks)} 个章节，正在拆分...", "blue")
+                add_log(f"✨ 找到 {len(bookmarks)} 个章节...", "green")
                 
-                # 开始拆分
+                # 拆分逻辑
+                total_pages = len(reader.pages)
                 for i, bookmark in enumerate(bookmarks):
                     title = bookmark.title
-                    start_page = reader.get_destination_page_number(bookmark)
-
+                    start = reader.get_destination_page_number(bookmark)
+                    
                     if i < len(bookmarks) - 1:
-                        next_bookmark = bookmarks[i+1]
-                        end_page = reader.get_destination_page_number(next_bookmark) - 1
+                        next_bm = bookmarks[i+1]
+                        end = reader.get_destination_page_number(next_bm) - 1
                     else:
-                        end_page = total_pages - 1
+                        end = total_pages - 1
+
+                    safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
+                    if not safe_title: safe_title = f"Chapter_{i+1}"
                     
-                    # 清理文件名
-                    safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()
-                    output_name = f"{i+1:02d} - {safe_title}.pdf"
-                    output_path = os.path.join(temp_dir, output_name)
-                    
-                    # 写入
                     writer = PdfWriter()
-                    for p in range(start_page, end_page + 1):
+                    for p in range(start, end + 1):
                         writer.add_page(reader.pages[p])
-                    with open(output_path, "wb") as f:
+                    
+                    out_path = os.path.join(temp_dir, f"{i+1:02d}-{safe_title}.pdf")
+                    with open(out_path, "wb") as f:
                         writer.write(f)
-                        
-                    add_log(f"✔ 已生成: {output_name}", "green")
-
-                # 2. 打包成 ZIP
-                add_log("📦 正在打包成压缩文件...", "blue")
-                zip_filename = f"拆分结果_{os.path.basename(pdf_path)}.zip"
-                zip_path = os.path.join(tempfile.gettempdir(), zip_filename)
                 
-                with zipfile.ZipFile(zip_path, 'w') as zipf:
-                    for root, dirs, files in os.walk(temp_dir):
+                # 打包 ZIP
+                zip_name = f"拆分结果_{os.path.basename(pdf_path)}.zip"
+                zip_full_path = os.path.join(tempfile.gettempdir(), zip_name)
+                
+                with zipfile.ZipFile(zip_full_path, 'w') as z:
+                    for root, _, files in os.walk(temp_dir):
                         for file in files:
-                            zipf.write(os.path.join(root, file), file)
+                            z.write(os.path.join(root, file), file)
+                            
+                add_log("🎉 打包完成！请点击下方按钮保存。", "green")
                 
-                add_log("🎉 处理完成！请点击下方按钮保存。", "green")
-                
-                # 启用保存按钮
-                save_file_picker.result_name = zip_filename # 预设文件名
-                save_file_picker.result_path = zip_path     # 暂存源路径以便读取
+                # 绑定保存路径
+                btn_save.data = zip_full_path
+                save_file_picker.result_name = zip_name
                 btn_save.visible = True
-                btn_save.data = zip_path # 把zip路径绑在按钮上
-
-        except Exception as err:
-            add_log(f"❌ 发生错误: {str(err)}", "red")
-        
+                
+            except Exception as e:
+                add_log(f"❌ 处理出错: {e}", "red")
+                print(f"Error details: {e}")
+            
+        except Exception as outer_e:
+            add_log(f"❌ 严重错误: {outer_e}", "red")
+            
         finally:
             progress_ring.visible = False
             btn_start.disabled = False
             page.update()
 
-    # --- 文件选择器逻辑 ---
-    def pick_files_result(e: ft.FilePickerResultEvent):
+    # --- 文件选择逻辑 ---
+    def pick_result(e: ft.FilePickerResultEvent):
         if e.files:
-            file = e.files[0]
-            selected_file_label.value = file.name
-            selected_file_label.data = file.path # 存储真实路径
-            add_log(f"📂 已选择文件: {file.name}")
-        page.update()
-
-    def save_file_result(e: ft.FilePickerResultEvent):
-        # 用户选好保存位置后，把生成的zip复制过去
-        if e.path and btn_save.data:
-            shutil.copy(btn_save.data, e.path)
-            add_log(f"✅ 文件已保存到: {e.path}", "green")
-            ft.SnackBar(text="保存成功！").open = True
+            # 注意：安卓上在这个回调里必须立刻保存路径
+            file_obj = e.files[0]
+            selected_file_path_ref.current = file_obj.path
+            file_label.value = file_obj.name
+            add_log(f"📂 已加载: {file_obj.name}")
             page.update()
 
-    # --- UI 组件初始化 ---
-    pick_file_dialog = ft.FilePicker(on_result=pick_files_result)
-    save_file_picker = ft.FilePicker(on_result=save_file_result)
-    page.overlay.extend([pick_file_dialog, save_file_picker])
+    def save_result(e: ft.FilePickerResultEvent):
+        # Flet 提供了 save_file_picker，它会自动处理安卓的存储权限
+        if e.path and btn_save.data:
+            try:
+                shutil.copy(btn_save.data, e.path)
+                add_log(f"✅ 保存成功！", "green")
+                page.snack_bar = ft.SnackBar(ft.Text("保存成功！"))
+                page.snack_bar.open = True
+                page.update()
+            except Exception as err:
+                add_log(f"保存失败: {err}", "red")
 
-    # 界面布局
-    title_text = ft.Text("📚 PDF 智能拆分器", size=28, weight=ft.FontWeight.BOLD, color=PRIMARY_COLOR)
+    # --- 界面组件 ---
+    pick_dialog = ft.FilePicker(on_result=pick_result)
+    save_file_picker = ft.FilePicker(on_result=save_result)
+    page.overlay.extend([pick_dialog, save_file_picker])
+
+    file_label = ft.Text("未选择文件", color="grey")
     
-    # 第一步：选文件
-    btn_pick = ft.ElevatedButton(
-        "选择 PDF 文件", 
-        icon=ft.icons.UPLOAD_FILE, 
-        on_click=lambda _: pick_file_dialog.pick_files(allowed_extensions=["pdf"])
-    )
-    selected_file_label = ft.Text("未选择文件", color="grey")
-
-    # 第二步：选层级
     level_dropdown = ft.Dropdown(
-        label="选择拆分层级",
-        width=200,
-        options=[
-            ft.dropdown.Option("1", "按第 1 级目录 (章)"),
-            ft.dropdown.Option("2", "按第 2 级目录 (节)"),
-            ft.dropdown.Option("3", "按第 3 级目录 (小节)"),
-        ],
-        value="2", # 默认二级
-        prefix_icon=ft.icons.FORMAT_LIST_NUMBERED
+        label="拆分层级", width=200, value="2",
+        options=[ft.dropdown.Option("1", "第1级 (章)"), ft.dropdown.Option("2", "第2级 (节)")]
     )
 
-    # 第三步：开始
-    btn_start = ft.ElevatedButton(
-        "开始拆分", 
-        icon=ft.icons.PLAY_ARROW, 
-        bgcolor=PRIMARY_COLOR, 
-        color="white",
-        on_click=start_process
-    )
+    btn_start = ft.ElevatedButton("开始拆分", on_click=start_process, bgcolor="blue", color="white")
     progress_ring = ft.ProgressRing(visible=False)
     
-    # 第四步：保存
     btn_save = ft.ElevatedButton(
-        "下载/保存结果 (ZIP)", 
+        "保存 ZIP 到手机", 
         icon=ft.icons.DOWNLOAD, 
-        bgcolor="green", 
-        color="white",
+        bgcolor="green", color="white", 
         visible=False,
         on_click=lambda _: save_file_picker.save_file(file_name=save_file_picker.result_name)
     )
 
-    # --- 组装界面 ---
+    # 布局
     page.add(
-        ft.Column(
-            [
-                ft.Container(content=title_text, margin=ft.margin.only(bottom=20)),
-                
-                ft.Container(
-                    content=ft.Column([
-                        ft.Text("第一步：选择文件", weight=ft.FontWeight.BOLD),
-                        ft.Row([btn_pick, selected_file_label], alignment=ft.MainAxisAlignment.START),
-                    ]),
-                    padding=15, bgcolor="white", border_radius=10
-                ),
-                ft.Container(height=10), # 间隔
-                
-                ft.Container(
-                    content=ft.Column([
-                        ft.Text("第二步：设置", weight=ft.FontWeight.BOLD),
-                        level_dropdown,
-                    ]),
-                    padding=15, bgcolor="white", border_radius=10
-                ),
-                ft.Container(height=10),
-                
-                ft.Row([btn_start, progress_ring], alignment=ft.MainAxisAlignment.CENTER),
-                ft.Container(height=10),
-                
-                # 日志区域
-                ft.Container(
-                    content=ft.Column([
-                        ft.Text("运行日志：", size=14, color="grey"),
-                        ft.Container(
-                            content=process_log,
-                            height=200, # 固定高度，内容多了滚动
-                            border=ft.border.all(1, "#eeeeee"),
-                            border_radius=5,
-                            padding=10,
-                            bgcolor="#fafafa"
-                        )
-                    ]),
-                    padding=15, bgcolor="white", border_radius=10
-                ),
-                
-                ft.Container(height=10),
-                ft.Row([btn_save], alignment=ft.MainAxisAlignment.CENTER)
-            ],
-            scroll=ft.ScrollMode.AUTO
-        )
+        ft.Text("📚 PDF 拆分神器", size=24, weight="bold"),
+        ft.Container(height=20),
+        ft.Row([ft.ElevatedButton("选择PDF", on_click=lambda _: pick_dialog.pick_files(allowed_extensions=["pdf"])), file_label]),
+        ft.Container(height=10),
+        level_dropdown,
+        ft.Container(height=20),
+        ft.Row([btn_start, progress_ring]),
+        ft.Container(height=20),
+        ft.Container(
+            content=process_log, 
+            height=200, bgcolor="#f0f0f0", border_radius=10, padding=10, 
+            border=ft.border.all(1, "#cccccc")
+        ),
+        ft.Container(height=10),
+        btn_save
     )
 
 ft.app(target=main)
