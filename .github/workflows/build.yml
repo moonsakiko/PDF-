@@ -17,6 +17,7 @@ jobs:
         cache: 'pip'
 
     - name: Install dependencies
+      # 这里安装是为了检查环境，但打包时 Flet 会自己再读一次 requirements.txt
       run: pip install -r requirements.txt
 
     - name: Setup Flutter
@@ -25,10 +26,10 @@ jobs:
         flutter-version: '3.19.0'
         cache: true
 
+    # --- 修正了下面这一步 ---
     - name: Build APK
-      # 这里修改了 APP 的名称和描述
       run: |
-        flet build apk --product "PDF拆分器" --org "com.mypdf.tools" --description "拆分工具" --include-packages pypdf --verbose  
+        flet build apk --product "PDF拆分器" --org "com.mypdf.tools" --description "拆分工具"
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
